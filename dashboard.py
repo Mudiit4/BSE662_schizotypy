@@ -370,16 +370,22 @@ with tab5:
     st.subheader("K-Means Clustering")
     
     feature_options = {
-        'DTD Metrics': ['dtd_15_85', 'dtd_60_40'],
-        'Confidence Metrics': ['decision_confidence_15_85', 'decision_confidence_60_40'],
-        'Schizotypy Metrics': ['olife_total', 'ss1', 'ss2', 'ss3', 'ss4']
+        'DTD (15/85)': ['dtd_15_85'],
+        'DTD (60/40)': ['dtd_60_40'],
+        'Confidence (15/85)': ['decision_confidence_15_85'],
+        'Confidence (60/40)': ['decision_confidence_60_40'],
+        'Schizotypy Total': ['olife_total'],
+        'SS1: Unusual Experiences': ['ss1'],
+        'SS2: Cognitive Disorganisation': ['ss2'],
+        'SS3: Introvertive Anhedonia': ['ss3'],
+        'SS4: Impulsive Nonconformity': ['ss4']
     }
     
     # Let user select feature categories
     selected_categories = st.multiselect(
         "Select feature categories for clustering:",
         options=list(feature_options.keys()),
-        default=['DTD Metrics', 'Schizotypy Metrics']
+        default=['DTD (15/85)', 'DTD (60/40)', 'Schizotypy Total']
     )
     
     # Get all selected features
@@ -535,7 +541,7 @@ with tab5:
             
             # Explained variance
             st.write(f"PC1 explained variance: {pca.explained_variance_ratio_[0]:.2%}")
-            st.write(f"PC2 explained variance: {pca.explained_variance_ratio_[1]:.2%}")
+            st.write(f"PC2 explained variance: {pca.explained_variance_ratio_[1]::.2%}")
             
             # Feature importance
             feature_importance = pd.DataFrame(
