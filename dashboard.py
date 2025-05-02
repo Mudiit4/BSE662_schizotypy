@@ -4,14 +4,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
+import scipy
 import plotly.express as px
 import plotly.graph_objects as go
+import statsmodels.api as sm
 from plotly.subplots import make_subplots
 from scipy.stats import pearsonr, spearmanr
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-import scipy.stats as stats
+import sklearn.metrics
 
 # Set the page configuration
 st.set_page_config(
@@ -23,16 +25,67 @@ st.set_page_config(
 # Load the data
 @st.cache_data
 def load_data():
-    participant_avg_dtd = pd.read_csv("participant_avg_dtd.csv")
+    participant_avg_dtd = pd.read_csv("participant_avg_dtd_with_confidence.csv")
     schizotypy = pd.read_csv("schizotypy.csv")
-    trial_wise_data_2 = pd.read_csv("trial_wise_data_2.csv")
+    trial_wise_data = pd.read_csv("trial_wise_data_new_with_pid.csv")
     
-    # Merge the data
+    # Check if participant_id in participant_avg_dtd matches PID in schizotypy
+    st.write("Verifying participant IDs between datasets...")
+    
+    # Convert all participant IDs to the same format for comparison
+    participant_avg_dtd['participant_id_check'] = participant_avg_dtd['participant_id'].astype(str)
+    schizotypy['PID_check'] = schizotypy['PID'].astype(str)
+    
+    # Create sets of participant IDs from each dataset for comparison
+    avg_dtd_participants = set(participant_avg_dtd['participant_id_check'])
+    schizotypy_participants = set(schizotypy['PID_check'])
+    trial_wise_participants = set([str(pid) for pid in trial_wise_data['participant_id']])
+    
+    # Check for missing or mismatched participant IDs
+    missing_in_schizotypy = avg_dtd_participants - schizotypy_participants
+    missing_in_avg_dtd = schizotypy_participants - avg_dtd_participants
+    missing_in_trial_wise = avg_dtd_participants - trial_wise_participants
+    
+    # Display warnings if any participant IDs are missing between datasets
+    if missing_in_schizotypy:
+        st.warning(f"Warning: {len(missing_in_schizotypy)} participants in DTD data are missing from schizotypy data: {', '.join(missing_in_schizotypy)}")
+    
+    if missing_in_avg_dtd:
+        st.warning(f"Warning: {len(missing_in_avg_dtd)} participants in schizotypy data are missing from DTD data: {', '.join(missing_in_avg_dtd)}")
+    
+    if missing_in_trial_wise:
+        st.warning(f"Warning: {len(missing_in_trial_wise)} participants in DTD data are missing from trial-wise data: {', '.join(missing_in_trial_wise)}")
+    
+    # Merge the data, using inner join to ensure only matched participants are included
     merged_data = pd.merge(participant_avg_dtd, schizotypy, left_on="participant_id", right_on="PID", how="inner")
     
-    return participant_avg_dtd, schizotypy, trial_wise_data_2, merged_data
+    # Report how many participants were successfully matched
+    st.success(f"Successfully matched {len(merged_data)} participants across all datasets.")
+    
+    # Clean up temporary columns used for checking
+    if 'participant_id_check' in participant_avg_dtd.columns:
+        participant_avg_dtd.drop(columns=['participant_id_check'], inplace=True)
+    if 'PID_check' in schizotypy.columns:
+        schizotypy.drop(columns=['PID_check'], inplace=True)
+    
+    return participant_avg_dtd, schizotypy, trial_wise_data, merged_data
 
-participant_avg_dtd, schizotypy, trial_wise_data_2, merged_data = load_data()
+# Load data with messages hidden initially
+with st.spinner("Loading and verifying data..."):
+    participant_avg_dtd, schizotypy, trial_wise_data, merged_data = load_data()
+    
+# Create a section for data verification that can be expanded
+with st.expander("Data Verification Details"):
+    st.subheader("Dataset Information")
+    st.write(f"Number of participants in average DTD data: {len(participant_avg_dtd)}")
+    st.write(f"Number of participants in schizotypy data: {len(schizotypy)}")
+    st.write(f"Number of participants in trial-wise data: {trial_wise_data['participant_id'].nunique()}")
+    st.write(f"Number of participants successfully matched across datasets: {len(merged_data)}")
+    
+    # Show sample of matched participants
+    st.subheader("Sample of Matched Participant IDs")
+    matched_pids = merged_data[['participant_id', 'PID']].head(10)
+    st.dataframe(matched_pids)
 
 # Title and introduction
 st.title("Beads Drawing Task vs Schizotypy Analysis")
@@ -178,46 +231,400 @@ with tab2:
 with tab3:
     st.header("Confidence Analysis")
     
-    # Decision confidence vs Schizotypy
-    st.subheader("Decision Confidence vs Schizotypy")
+    # Add a section with tabs for the different confidence metrics
+    st.subheader("Confidence Metrics Analysis")
     
-    conf_measures = ["decision_confidence_15_85", "decision_confidence_60_40"]
+    conf_metric_tabs = st.tabs(["Decision Confidence", "First Confidence", "Last Confidence", "Confidence Evolution"])
     
-    for conf_col in conf_measures:
-        ratio = "15/85" if conf_col == "decision_confidence_15_85" else "60/40"
-        st.write(f"### Decision Confidence for {ratio} Jar Ratio")
+    # Tab 1: Decision confidence (original analysis)
+    with conf_metric_tabs[0]:
+        st.subheader("Decision Confidence vs Schizotypy")
         
-        # Create multiple plots in tabs
-        conf_tabs = st.tabs(schizo_labels)
+        conf_measures = ["decision_confidence_15_85", "decision_confidence_60_40"]
         
-        for i, (tab, schizo_col, label) in enumerate(zip(conf_tabs, schizo_measures, schizo_labels)):
-            with tab:
-                # Calculate correlation
-                corr, p_value = pearsonr(merged_data[conf_col], merged_data[schizo_col])
-                
-                fig = px.scatter(merged_data, x=schizo_col, y=conf_col,
-                               hover_data=["participant_id"],
-                               labels={conf_col: f"Decision Confidence ({ratio})", schizo_col: label},
-                               trendline="ols")
-                
-                fig.update_layout(
-                    title=f"Decision Confidence ({ratio}) vs {label} (r={corr:.2f}, p={p_value:.3f})",
-                    height=500
+        for conf_col in conf_measures:
+            ratio = "15/85" if conf_col == "decision_confidence_15_85" else "60/40"
+            st.write(f"### Decision Confidence for {ratio} Jar Ratio")
+            
+            # Create multiple plots in tabs
+            conf_tabs = st.tabs(schizo_labels)
+            
+            for i, (tab, schizo_col, label) in enumerate(zip(conf_tabs, schizo_measures, schizo_labels)):
+                with tab:
+                    # Calculate correlation
+                    corr, p_value = pearsonr(merged_data[conf_col], merged_data[schizo_col])
+                    
+                    fig = px.scatter(merged_data, x=schizo_col, y=conf_col,
+                                   hover_data=["participant_id"],
+                                   labels={conf_col: f"Decision Confidence ({ratio})", schizo_col: label},
+                                   trendline="ols")
+                    
+                    fig.update_layout(
+                        title=f"Decision Confidence ({ratio}) vs {label} (r={corr:.2f}, p={p_value:.3f})",
+                        height=500
+                    )
+                    
+                    st.plotly_chart(fig)
+                    
+                    # Display statistical significance
+                    alpha = 0.05
+                    if p_value < alpha:
+                        st.success(f"Statistically significant correlation (p={p_value:.3f})")
+                    else:
+                        st.info(f"No statistically significant correlation (p={p_value:.3f})")
+
+    # Tab 2: First confidence analysis
+    with conf_metric_tabs[1]:
+        st.subheader("First Confidence vs Schizotypy")
+        
+        st.markdown("""
+        This analysis shows the relationship between the first confidence values reported by participants 
+        (confidence rating at the beginning of the task) and their schizotypy scores. This may reveal how 
+        schizotypal traits influence initial confidence judgments before much evidence has been gathered.
+        """)
+        
+        first_conf_tabs = st.tabs(["First Confidence (15/85)", "First Confidence (60/40)"])
+        
+        # For 15/85 ratio (high contrast)
+        with first_conf_tabs[0]:
+            ratio_tabs = st.tabs(schizo_labels)
+            
+            for i, (tab, schizo_col, label) in enumerate(zip(ratio_tabs, schizo_measures, schizo_labels)):
+                with tab:
+                    # Calculate correlation
+                    corr, p_value = pearsonr(merged_data['first_conf_85_15'], merged_data[schizo_col])
+                    
+                    fig = px.scatter(merged_data, x=schizo_col, y='first_conf_85_15',
+                                   hover_data=["participant_id"],
+                                   labels={"first_conf_85_15": "First Confidence (15/85)", schizo_col: label},
+                                   trendline="ols")
+                    
+                    fig.update_layout(
+                        title=f"First Confidence (15/85) vs {label} (r={corr:.2f}, p={p_value:.3f})",
+                        height=500
+                    )
+                    
+                    st.plotly_chart(fig)
+                    
+                    # Display statistical significance
+                    alpha = 0.05
+                    if p_value < alpha:
+                        st.success(f"Statistically significant correlation (p={p_value:.3f})")
+                    else:
+                        st.info(f"No statistically significant correlation (p={p_value:.3f})")
+        
+        # For 60/40 ratio (low contrast)
+        with first_conf_tabs[1]:
+            ratio_tabs = st.tabs(schizo_labels)
+            
+            for i, (tab, schizo_col, label) in enumerate(zip(ratio_tabs, schizo_measures, schizo_labels)):
+                with tab:
+                    # Calculate correlation
+                    corr, p_value = pearsonr(merged_data['first_conf_60_40'], merged_data[schizo_col])
+                    
+                    fig = px.scatter(merged_data, x=schizo_col, y='first_conf_60_40',
+                                   hover_data=["participant_id"],
+                                   labels={"first_conf_60_40": "First Confidence (60/40)", schizo_col: label},
+                                   trendline="ols")
+                    
+                    fig.update_layout(
+                        title=f"First Confidence (60/40) vs {label} (r={corr:.2f}, p={p_value:.3f})",
+                        height=500
+                    )
+                    
+                    st.plotly_chart(fig)
+                    
+                    # Display statistical significance
+                    alpha = 0.05
+                    if p_value < alpha:
+                        st.success(f"Statistically significant correlation (p={p_value:.3f})")
+                    else:
+                        st.info(f"No statistically significant correlation (p={p_value:.3f})")
+
+    # Tab 3: Last confidence analysis
+    with conf_metric_tabs[2]:
+        st.subheader("Last Confidence vs Schizotypy")
+        
+        st.markdown("""
+        This analysis shows the relationship between the last confidence values reported by participants 
+        (final confidence rating just before making a decision) and their schizotypy scores. This may reveal how 
+        schizotypal traits relate to confidence during the moment of decision across different task difficulties.
+        """)
+        
+        last_conf_tabs = st.tabs(["Last Confidence (15/85)", "Last Confidence (60/40)"])
+        
+        # For 15/85 ratio (high contrast)
+        with last_conf_tabs[0]:
+            ratio_tabs = st.tabs(schizo_labels)
+            
+            for i, (tab, schizo_col, label) in enumerate(zip(ratio_tabs, schizo_measures, schizo_labels)):
+                with tab:
+                    # Calculate correlation
+                    corr, p_value = pearsonr(merged_data['last_conf_85_15'], merged_data[schizo_col])
+                    
+                    fig = px.scatter(merged_data, x=schizo_col, y='last_conf_85_15',
+                                   hover_data=["participant_id"],
+                                   labels={"last_conf_85_15": "Last Confidence (15/85)", schizo_col: label},
+                                   trendline="ols")
+                    
+                    fig.update_layout(
+                        title=f"Last Confidence (15/85) vs {label} (r={corr:.2f}, p={p_value:.3f})",
+                        height=500
+                    )
+                    
+                    st.plotly_chart(fig)
+                    
+                    # Display statistical significance
+                    alpha = 0.05
+                    if p_value < alpha:
+                        st.success(f"Statistically significant correlation (p={p_value:.3f})")
+                    else:
+                        st.info(f"No statistically significant correlation (p={p_value:.3f})")
+        
+        # For 60/40 ratio (low contrast)
+        with last_conf_tabs[1]:
+            ratio_tabs = st.tabs(schizo_labels)
+            
+            for i, (tab, schizo_col, label) in enumerate(zip(ratio_tabs, schizo_measures, schizo_labels)):
+                with tab:
+                    # Calculate correlation
+                    corr, p_value = pearsonr(merged_data['last_conf_60_40'], merged_data[schizo_col])
+                    
+                    fig = px.scatter(merged_data, x=schizo_col, y='last_conf_60_40',
+                                   hover_data=["participant_id"],
+                                   labels={"last_conf_60_40": "Last Confidence (60/40)", schizo_col: label},
+                                   trendline="ols")
+                    
+                    fig.update_layout(
+                        title=f"Last Confidence (60/40) vs {label} (r={corr:.2f}, p={p_value:.3f})",
+                        height=500
+                    )
+                    
+                    st.plotly_chart(fig)
+                    
+                    # Display statistical significance
+                    alpha = 0.05
+                    if p_value < alpha:
+                        st.success(f"Statistically significant correlation (p={p_value:.3f})")
+                    else:
+                        st.info(f"No statistically significant correlation (p={p_value:.3f})")
+    
+    # Tab 4: Confidence evolution analysis
+    with conf_metric_tabs[3]:
+        st.subheader("Confidence Evolution Analysis")
+        
+        st.markdown("""
+        This analysis visualizes how confidence changes from the first bead to the final decision.
+        It compares first confidence, last confidence, and final decision confidence to show the evolution
+        of confidence throughout the task.
+        """)
+        
+        # Create evolution visualizations for high contrast (15/85) and low contrast (60/40) conditions
+        for condition, name in [("15/85", "High Contrast"), ("60/40", "Low Contrast")]:
+            st.write(f"### Confidence Evolution for {name} ({condition}) Jar Ratio")
+            
+            # Prepare data for bars
+            if condition == "15/85":
+                first_conf = merged_data['first_conf_85_15'].mean()
+                last_conf = merged_data['last_conf_85_15'].mean()
+                decision_conf = merged_data['decision_confidence_15_85'].mean()
+                first_conf_std = merged_data['first_conf_85_15'].std()
+                last_conf_std = merged_data['last_conf_85_15'].std()
+                decision_conf_std = merged_data['decision_confidence_15_85'].std()
+            else:
+                first_conf = merged_data['first_conf_60_40'].mean()
+                last_conf = merged_data['last_conf_60_40'].mean()
+                decision_conf = merged_data['decision_confidence_60_40'].mean()
+                first_conf_std = merged_data['first_conf_60_40'].std()
+                last_conf_std = merged_data['last_conf_60_40'].std()
+                decision_conf_std = merged_data['decision_confidence_60_40'].std()
+            
+            # Create bar chart
+            evolution_data = {
+                'Stage': ['First Confidence', 'Last Confidence', 'Decision Confidence'],
+                'Mean Confidence': [first_conf, last_conf, decision_conf],
+                'Standard Deviation': [first_conf_std, last_conf_std, decision_conf_std]
+            }
+            
+            fig = go.Figure()
+            
+            # Add bars for mean confidence
+            fig.add_trace(go.Bar(
+                x=evolution_data['Stage'],
+                y=evolution_data['Mean Confidence'],
+                name='Mean Confidence',
+                marker_color='royalblue',
+                error_y=dict(
+                    type='data',
+                    array=evolution_data['Standard Deviation'],
+                    visible=True
                 )
+            ))
+            
+            # Update layout
+            fig.update_layout(
+                title=f"Confidence Evolution for {condition} Condition",
+                xaxis_title="Task Stage",
+                yaxis_title="Confidence Level (%)",
+                yaxis=dict(range=[0, 100]),
+                height=500
+            )
+            
+            st.plotly_chart(fig)
+            
+            # Calculate and display statistics
+            first_to_last = last_conf - first_conf
+            last_to_decision = decision_conf - last_conf
+            overall_change = decision_conf - first_conf
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Statistical Summary:**")
+                st.write(f"- First Confidence: {first_conf:.2f}%")
+                st.write(f"- Last Confidence: {last_conf:.2f}%")
+                st.write(f"- Decision Confidence: {decision_conf:.2f}%")
+            
+            with col2:
+                st.write("**Confidence Changes:**")
+                st.write(f"- First to Last: {first_to_last:+.2f}% {'↑' if first_to_last > 0 else '↓'}")
+                st.write(f"- Last to Decision: {last_to_decision:+.2f}% {'↑' if last_to_decision > 0 else '↓'}")
+                st.write(f"- Overall Change: {overall_change:+.2f}% {'↑' if overall_change > 0 else '↓'}")
+            
+            # Test for significant differences between stages
+            first_last_tstat, first_last_pval = stats.ttest_rel(
+                merged_data[f'first_conf_{"85_15" if condition == "15/85" else "60_40"}'],
+                merged_data[f'last_conf_{"85_15" if condition == "15/85" else "60_40"}']
+            )
+            
+            last_decision_tstat, last_decision_pval = stats.ttest_rel(
+                merged_data[f'last_conf_{"85_15" if condition == "15/85" else "60_40"}'],
+                merged_data[f'decision_confidence_{"15_85" if condition == "15/85" else "60_40"}']
+            )
+            
+            first_decision_tstat, first_decision_pval = stats.ttest_rel(
+                merged_data[f'first_conf_{"85_15" if condition == "15/85" else "60_40"}'],
+                merged_data[f'decision_confidence_{"15_85" if condition == "15/85" else "60_40"}']
+            )
+            
+            st.write("**Statistical Tests (Paired t-tests):**")
+            
+            if first_last_pval < 0.05:
+                st.success(f"Significant difference between First and Last Confidence (t={first_last_tstat:.2f}, p={first_last_pval:.4f})")
+            else:
+                st.info(f"No significant difference between First and Last Confidence (t={first_last_tstat:.2f}, p={first_last_pval:.4f})")
                 
-                st.plotly_chart(fig)
+            if last_decision_pval < 0.05:
+                st.success(f"Significant difference between Last and Decision Confidence (t={last_decision_tstat:.2f}, p={last_decision_pval:.4f})")
+            else:
+                st.info(f"No significant difference between Last and Decision Confidence (t={last_decision_tstat:.2f}, p={last_decision_pval:.4f})")
                 
-                # Display statistical significance
-                alpha = 0.05
-                if p_value < alpha:
-                    st.success(f"Statistically significant correlation (p={p_value:.3f})")
-                else:
-                    st.info(f"No statistically significant correlation (p={p_value:.3f})")
+            if first_decision_pval < 0.05:
+                st.success(f"Significant difference between First and Decision Confidence (t={first_decision_tstat:.2f}, p={first_decision_pval:.4f})")
+            else:
+                st.info(f"No significant difference between First and Decision Confidence (t={first_decision_tstat:.2f}, p={first_decision_pval:.4f})")
+        
+        # Add visualization comparing condition differences in confidence evolution
+        st.write("### Comparing Confidence Evolution Between Conditions")
+        
+        # Create dataframe for the comparison visualization
+        evolution_comparison = pd.DataFrame({
+            'Stage': ['First Confidence', 'Last Confidence', 'Decision Confidence'] * 2,
+            'Condition': ['15/85'] * 3 + ['60/40'] * 3,
+            'Mean Confidence': [
+                merged_data['first_conf_85_15'].mean(), 
+                merged_data['last_conf_85_15'].mean(), 
+                merged_data['decision_confidence_15_85'].mean(),
+                merged_data['first_conf_60_40'].mean(),
+                merged_data['last_conf_60_40'].mean(),
+                merged_data['decision_confidence_60_40'].mean()
+            ]
+        })
+        
+        # Create the visualization
+        fig = px.line(
+            evolution_comparison, x='Stage', y='Mean Confidence', color='Condition',
+            markers=True, title="Confidence Evolution Comparison Between Conditions",
+            labels={'Mean Confidence': 'Confidence Level (%)', 'Stage': 'Task Stage'},
+            color_discrete_map={'15/85': 'royalblue', '60/40': 'firebrick'}
+        )
+        
+        fig.update_layout(
+            yaxis=dict(range=[0, 100]),
+            height=500
+        )
+        
+        st.plotly_chart(fig)
+        
+        # Statistical comparison between conditions
+        st.write("**Statistical Comparison Between Conditions:**")
+        
+        # Compare first confidence between conditions
+        first_tstat, first_pval = stats.ttest_rel(
+            merged_data['first_conf_85_15'],
+            merged_data['first_conf_60_40']
+        )
+        
+        # Compare last confidence between conditions
+        last_tstat, last_pval = stats.ttest_rel(
+            merged_data['last_conf_85_15'],
+            merged_data['last_conf_60_40']
+        )
+        
+        # Compare decision confidence between conditions
+        decision_tstat, decision_pval = stats.ttest_rel(
+            merged_data['decision_confidence_15_85'],
+            merged_data['decision_confidence_60_40']
+        )
+        
+        # Display statistics in two columns
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**First Confidence:**")
+            st.write(f"- 15/85: {merged_data['first_conf_85_15'].mean():.2f}%")
+            st.write(f"- 60/40: {merged_data['first_conf_60_40'].mean():.2f}%")
+            st.write(f"- Difference: {merged_data['first_conf_85_15'].mean() - merged_data['first_conf_60_40'].mean():+.2f}%")
+            
+            if first_pval < 0.05:
+                st.success(f"Significant difference in First Confidence (t={first_tstat:.2f}, p={first_pval:.4f})")
+            else:
+                st.info(f"No significant difference in First Confidence (t={first_tstat:.2f}, p={first_pval:.4f})")
+                
+            st.write("**Last Confidence:**")
+            st.write(f"- 15/85: {merged_data['last_conf_85_15'].mean():.2f}%")
+            st.write(f"- 60/40: {merged_data['last_conf_60_40'].mean():.2f}%")
+            st.write(f"- Difference: {merged_data['last_conf_85_15'].mean() - merged_data['last_conf_60_40'].mean():+.2f}%")
+            
+            if last_pval < 0.05:
+                st.success(f"Significant difference in Last Confidence (t={last_tstat:.2f}, p={last_pval:.4f})")
+            else:
+                st.info(f"No significant difference in Last Confidence (t={last_tstat:.2f}, p={last_pval:.4f})")
+        
+        with col2:
+            st.write("**Decision Confidence:**")
+            st.write(f"- 15/85: {merged_data['decision_confidence_15_85'].mean():.2f}%")
+            st.write(f"- 60/40: {merged_data['decision_confidence_60_40'].mean():.2f}%")
+            st.write(f"- Difference: {merged_data['decision_confidence_15_85'].mean() - merged_data['decision_confidence_60_40'].mean():+.2f}%")
+            
+            if decision_pval < 0.05:
+                st.success(f"Significant difference in Decision Confidence (t={decision_tstat:.2f}, p={decision_pval:.4f})")
+            else:
+                st.info(f"No significant difference in Decision Confidence (t={decision_tstat:.2f}, p={decision_pval:.4f})")
+            
+            # Calculate confidence growth rates
+            growth_85_15 = (merged_data['last_conf_85_15'].mean() - merged_data['first_conf_85_15'].mean()) / merged_data['first_conf_85_15'].mean() * 100
+            growth_60_40 = (merged_data['last_conf_60_40'].mean() - merged_data['first_conf_60_40'].mean()) / merged_data['first_conf_60_40'].mean() * 100
+            
+            st.write("**Confidence Growth Rate:**")
+            st.write(f"- 15/85: {growth_85_15:.2f}%")
+            st.write(f"- 60/40: {growth_60_40:.2f}%")
+            st.write(f"- Difference: {growth_85_15 - growth_60_40:+.2f}%")
     
-    # Confidence vs DTD analysis
-    st.subheader("Decision Confidence vs Draws to Decision")
+    # Add confidence vs DTD analysis
+    st.subheader("Confidence vs DTD Analysis")
     
-    # 15/85 ratio
+    # 15/85 ratio - Decision Confidence vs DTD
     fig1 = px.scatter(merged_data, x="dtd_15_85", y="decision_confidence_15_85", 
                     hover_data=["participant_id", "olife_total"],
                     labels={"dtd_15_85": "DTD (15/85)", "decision_confidence_15_85": "Decision Confidence (15/85)"},
@@ -227,7 +634,7 @@ with tab3:
     fig1.update_layout(title=f"DTD vs Decision Confidence (15/85) (r={corr1:.2f}, p={p1:.3f})", height=500)
     st.plotly_chart(fig1)
     
-    # 60/40 ratio
+    # 60/40 ratio - Decision Confidence vs DTD
     fig2 = px.scatter(merged_data, x="dtd_60_40", y="decision_confidence_60_40", 
                     hover_data=["participant_id", "olife_total"],
                     labels={"dtd_60_40": "DTD (60/40)", "decision_confidence_60_40": "Decision Confidence (60/40)"},
@@ -236,384 +643,612 @@ with tab3:
     corr2, p2 = pearsonr(merged_data["dtd_60_40"], merged_data["decision_confidence_60_40"])
     fig2.update_layout(title=f"DTD vs Decision Confidence (60/40) (r={corr2:.2f}, p={p2:.3f})", height=500)
     st.plotly_chart(fig2)
+    
+    # 15/85 ratio - First Confidence vs DTD
+    fig3 = px.scatter(merged_data, x="dtd_15_85", y="first_conf_85_15", 
+                    hover_data=["participant_id", "olife_total"],
+                    labels={"dtd_15_85": "DTD (15/85)", "first_conf_85_15": "First Confidence (15/85)"},
+                    trendline="ols")
+    
+    corr3, p3 = pearsonr(merged_data["dtd_15_85"], merged_data["first_conf_85_15"])
+    fig3.update_layout(title=f"DTD vs First Confidence (15/85) (r={corr3:.2f}, p={p3:.3f})", height=500)
+    st.plotly_chart(fig3)
+    
+    # 60/40 ratio - First Confidence vs DTD
+    fig4 = px.scatter(merged_data, x="dtd_60_40", y="first_conf_60_40", 
+                    hover_data=["participant_id", "olife_total"],
+                    labels={"dtd_60_40": "DTD (60/40)", "first_conf_60_40": "First Confidence (60/40)"},
+                    trendline="ols")
+    
+    corr4, p4 = pearsonr(merged_data["dtd_60_40"], merged_data["first_conf_60_40"])
+    fig4.update_layout(title=f"DTD vs First Confidence (60/40) (r={corr4:.2f}, p={p4:.3f})", height=500)
+    st.plotly_chart(fig4)
+    
+    # 15/85 ratio - Last Confidence vs DTD
+    fig5 = px.scatter(merged_data, x="dtd_15_85", y="last_conf_85_15", 
+                    hover_data=["participant_id", "olife_total"],
+                    labels={"dtd_15_85": "DTD (15/85)", "last_conf_85_15": "Last Confidence (15/85)"},
+                    trendline="ols")
+    
+    corr5, p5 = pearsonr(merged_data["dtd_15_85"], merged_data["last_conf_85_15"])
+    fig5.update_layout(title=f"DTD vs Last Confidence (15/85) (r={corr5:.2f}, p={p5:.3f})", height=500)
+    st.plotly_chart(fig5)
+    
+    # 60/40 ratio - Last Confidence vs DTD
+    fig6 = px.scatter(merged_data, x="dtd_60_40", y="last_conf_60_40", 
+                    hover_data=["participant_id", "olife_total"],
+                    labels={"dtd_60_40": "DTD (60/40)", "last_conf_60_40": "Last Confidence (60/40)"},
+                    trendline="ols")
+    
+    corr6, p6 = pearsonr(merged_data["dtd_60_40"], merged_data["last_conf_60_40"])
+    fig6.update_layout(title=f"DTD vs Last Confidence (60/40) (r={corr6:.2f}, p={p6:.3f})", height=500)
+    st.plotly_chart(fig6)
+    
+    # Summary of correlations
+    st.subheader("Summary of DTD vs Confidence Correlations")
+    
+    corr_summary = pd.DataFrame({
+        'Metric 1': ["DTD (15/85)", "DTD (60/40)", "DTD (15/85)", "DTD (60/40)", "DTD (15/85)", "DTD (60/40)"],
+        'Metric 2': ["Decision Confidence (15/85)", "Decision Confidence (60/40)", 
+                    "First Confidence (15/85)", "First Confidence (60/40)",
+                    "Last Confidence (15/85)", "Last Confidence (60/40)"],
+        'Correlation': [corr1, corr2, corr3, corr4, corr5, corr6],
+        'p-value': [p1, p2, p3, p4, p5, p6],
+        'Significance': ["Significant" if p < 0.05 else "Not Significant" for p in [p1, p2, p3, p4, p5, p6]]
+    })
+    
+    st.dataframe(corr_summary.style.format({
+        'Correlation': '{:.3f}',
+        'p-value': '{:.3f}'
+    }).background_gradient(subset=['Correlation'], cmap='coolwarm'))
 
 with tab4:
     st.header("Statistical Analysis")
     
-    # Create a dataframe to store all correlation results
-    correlations = []
+    st.subheader("Correlation Analysis")
     
-    # DTD correlations with schizotypy measures
-    for dtd_col in ["dtd_15_85", "dtd_60_40"]:
-        for schizo_col in ["olife_total", "ss1", "ss2", "ss3", "ss4"]:
-            corr, p_value = pearsonr(merged_data[dtd_col], merged_data[schizo_col])
-            dtd_label = "DTD (15/85)" if dtd_col == "dtd_15_85" else "DTD (60/40)"
-            schizo_label = {"olife_total": "Total Score", "ss1": "Unusual Experiences", 
-                            "ss2": "Cognitive Disorganisation", "ss3": "Introvertive Anhedonia", 
-                            "ss4": "Impulsive Nonconformity"}[schizo_col]
-            
-            correlations.append({
-                "Metric 1": dtd_label,
-                "Metric 2": schizo_label,
-                "Correlation": corr,
-                "p-value": p_value,
-                "Significance": "Significant" if p_value < 0.05 else "Not Significant"
-            })
+    # Select variables for correlation analysis
+    correlation_options = ["dtd_15_85", "dtd_60_40", 
+                          "decision_confidence_15_85", "decision_confidence_60_40",
+                          "first_conf_85_15", "first_conf_60_40",
+                          "last_conf_85_15", "last_conf_60_40",
+                          "olife_total", "ss1", "ss2", "ss3", "ss4"]
     
-    # Confidence correlations with schizotypy measures
-    for conf_col in ["decision_confidence_15_85", "decision_confidence_60_40"]:
-        for schizo_col in ["olife_total", "ss1", "ss2", "ss3", "ss4"]:
-            corr, p_value = pearsonr(merged_data[conf_col], merged_data[schizo_col])
-            conf_label = "Confidence (15/85)" if conf_col == "decision_confidence_15_85" else "Confidence (60/40)"
-            schizo_label = {"olife_total": "Total Score", "ss1": "Unusual Experiences", 
-                            "ss2": "Cognitive Disorganisation", "ss3": "Introvertive Anhedonia", 
-                            "ss4": "Impulsive Nonconformity"}[schizo_col]
-            
-            correlations.append({
-                "Metric 1": conf_label,
-                "Metric 2": schizo_label,
-                "Correlation": corr,
-                "p-value": p_value,
-                "Significance": "Significant" if p_value < 0.05 else "Not Significant"
-            })
+    correlation_vars = st.multiselect(
+        "Select Variables for Correlation Analysis",
+        options=correlation_options,
+        default=["dtd_15_85", "dtd_60_40", "olife_total", "ss1", "first_conf_85_15", "last_conf_85_15", "first_conf_60_40", "last_conf_60_40"]
+    )
     
-    # Convert to dataframe and sort by significance and correlation strength
-    corr_df = pd.DataFrame(correlations)
-    corr_df = corr_df.sort_values(by=["Significance", "Correlation"], ascending=[True, False])
-    
-    # Display correlation table
-    st.subheader("Correlation Analysis Summary")
-    st.dataframe(corr_df.style.format({
-        "Correlation": "{:.3f}",
-        "p-value": "{:.3f}"
-    }).background_gradient(subset=["Correlation"], cmap="coolwarm"))
-    
-    # Highlight most significant findings
-    significant_corrs = corr_df[corr_df["Significance"] == "Significant"]
-    
-    if not significant_corrs.empty:
+    if len(correlation_vars) > 1:
+        # Calculate correlation matrix
+        correlation_df = merged_data[correlation_vars].corr()
+        
+        # Display correlation matrix as heatmap
+        fig = px.imshow(
+            correlation_df,
+            text_auto=True,
+            color_continuous_scale="RdBu_r",
+            title="Correlation Matrix"
+        )
+        fig.update_layout(height=700)
+        st.plotly_chart(fig)
+        
+        # Display significant correlations
         st.subheader("Significant Correlations")
         
-        for _, row in significant_corrs.iterrows():
-            st.write(f"**{row['Metric 1']} vs {row['Metric 2']}**: r = {row['Correlation']:.3f}, p = {row['p-value']:.3f}")
+        significant_corrs = []
         
-        # Visualize the significant correlations
-        fig = px.bar(
-            significant_corrs,
-            x="Metric 2",
-            y="Correlation",
-            color="Metric 1",
-            barmode="group",
-            labels={"Metric 2": "Schizotypy Measure", "Correlation": "Pearson's r"},
-            title="Significant Correlations"
-        )
-        fig.update_layout(height=500)
-        st.plotly_chart(fig)
-    else:
-        st.info("No statistically significant correlations were found.")
+        # Calculate p-values for correlations
+        for i, var1 in enumerate(correlation_vars):
+            for j, var2 in enumerate(correlation_vars):
+                if i < j:  # Only look at upper triangle to avoid duplicates
+                    # Calculate correlation and p-value
+                    corr, p_val = scipy.stats.pearsonr(
+                        merged_data[var1].dropna(),
+                        merged_data[var2].dropna()
+                    )
+                    
+                    # Check if significant
+                    if p_val < 0.05:
+                        significant_corrs.append({
+                            "Variable 1": var1,
+                            "Variable 2": var2,
+                            "Correlation": corr,
+                            "p-value": p_val
+                        })
+        
+        if significant_corrs:
+            significant_df = pd.DataFrame(significant_corrs)
+            significant_df = significant_df.sort_values(by="p-value")
+            st.dataframe(significant_df)
+            
+            # Create scatterplot matrix for significant correlations
+            if len(significant_df) > 0:
+                # Get unique variables from significant correlations
+                sig_vars = list(set(
+                    significant_df["Variable 1"].tolist() + 
+                    significant_df["Variable 2"].tolist()
+                ))
+                
+                if len(sig_vars) > 1:
+                    fig = px.scatter_matrix(
+                        merged_data,
+                        dimensions=sig_vars,
+                        color="olife_total",
+                        title="Scatterplot Matrix of Significantly Correlated Variables"
+                    )
+                    fig.update_layout(height=800)
+                    st.plotly_chart(fig)
+        else:
+            st.write("No significant correlations found.")
     
-    # Group comparison based on schizotypy scores
+    # Group comparison
     st.subheader("Group Comparison")
     
-    # Create high/low schizotypy groups for comparison
-    median_total = merged_data["olife_total"].median()
-    merged_data["schizotypy_group"] = merged_data["olife_total"].apply(lambda x: "High" if x > median_total else "Low")
+    # Define the split variable
+    split_var = st.selectbox(
+        "Split Participants By:",
+        options=["olife_total", "ss1", "ss2", "ss3", "ss4"],
+        index=0
+    )
     
-    st.write(f"Comparing groups based on median schizotypy score (median = {median_total})")
+    # Define the threshold for splitting
+    threshold_type = st.radio(
+        "Split Method:",
+        options=["Median Split", "Custom Threshold"],
+        index=0
+    )
     
-    # Compare DTD between groups
-    for dtd_col in ["dtd_15_85", "dtd_60_40"]:
-        ratio = "15/85" if dtd_col == "dtd_15_85" else "60/40"
+    if threshold_type == "Median Split":
+        threshold = merged_data[split_var].median()
+    else:
+        threshold = st.slider(
+            "Threshold Value",
+            min_value=float(merged_data[split_var].min()),
+            max_value=float(merged_data[split_var].max()),
+            value=float(merged_data[split_var].median())
+        )
+    
+    # Create groups
+    merged_data["group"] = merged_data[split_var].apply(
+        lambda x: "High" if x > threshold else "Low"
+    )
+    
+    # Select variables for comparison
+    comparison_vars = st.multiselect(
+        "Select Variables to Compare Between Groups",
+        options=["dtd_15_85", "dtd_60_40", 
+                "decision_confidence_15_85", "decision_confidence_60_40",
+                "first_conf_85_15", "first_conf_60_40",
+                "last_conf_85_15", "last_conf_60_40"],
+        default=["dtd_15_85", "dtd_60_40", "first_conf_85_15", "last_conf_85_15"]
+    )
+    
+    if comparison_vars:
+        # Display group means
+        group_means = merged_data.groupby("group")[comparison_vars].mean().reset_index()
         
-        high_group = merged_data[merged_data["schizotypy_group"] == "High"][dtd_col]
-        low_group = merged_data[merged_data["schizotypy_group"] == "Low"][dtd_col]
+        # Reshape for plotting
+        group_means_melted = group_means.melt(
+            id_vars="group",
+            value_vars=comparison_vars,
+            var_name="Measure",
+            value_name="Value"
+        )
         
-        t_stat, p_val = stats.ttest_ind(high_group, low_group)
-        
-        fig = px.box(merged_data, x="schizotypy_group", y=dtd_col, 
-                   labels={"schizotypy_group": "Schizotypy Group", dtd_col: f"DTD ({ratio})"},
-                   title=f"DTD ({ratio}) Comparison by Schizotypy Group (p={p_val:.3f})")
-        
-        fig.update_layout(height=500)
+        # Create plot
+        fig = px.bar(
+            group_means_melted,
+            x="Measure",
+            y="Value",
+            color="group",
+            barmode="group",
+            title=f"Group Comparison by {split_var} (Threshold: {threshold:.2f})"
+        )
         st.plotly_chart(fig)
         
-        if p_val < 0.05:
-            st.success(f"Significant difference in DTD ({ratio}) between high and low schizotypy groups (p={p_val:.3f})")
+        # Statistical tests
+        st.subheader("Statistical Tests")
+        
+        test_results = []
+        
+        for var in comparison_vars:
+            # Get data for each group
+            group1 = merged_data[merged_data["group"] == "High"][var].dropna()
+            group2 = merged_data[merged_data["group"] == "Low"][var].dropna()
+            
+            # Perform t-test
+            t_stat, p_val = scipy.stats.ttest_ind(group1, group2, equal_var=False)
+            
+            # Calculate effect size (Cohen's d)
+            mean_diff = group1.mean() - group2.mean()
+            pooled_std = np.sqrt(((group1.count() - 1) * group1.std()**2 + 
+                                (group2.count() - 1) * group2.std()**2) / 
+                                (group1.count() + group2.count() - 2))
+            effect_size = mean_diff / pooled_std
+            
+            test_results.append({
+                "Measure": var,
+                "High Group Mean": group1.mean(),
+                "Low Group Mean": group2.mean(),
+                "Mean Difference": mean_diff,
+                "t-statistic": t_stat,
+                "p-value": p_val,
+                "Cohen's d": effect_size
+            })
+        
+        # Display test results
+        test_df = pd.DataFrame(test_results)
+        test_df = test_df.sort_values(by="p-value")
+        st.dataframe(test_df)
+        
+        # Highlight significant differences with boxplots
+        st.subheader("Distribution Comparison")
+        
+        # Find significant variables
+        significant_vars = test_df[test_df["p-value"] < 0.05]["Measure"].tolist()
+        
+        if significant_vars:
+            st.write("Significant differences found in:")
+            
+            for var in significant_vars:
+                fig = px.box(
+                    merged_data,
+                    x="group",
+                    y=var,
+                    color="group",
+                    points="all",
+                    title=f"{var} by {split_var} Group"
+                )
+                st.plotly_chart(fig)
         else:
-            st.info(f"No significant difference in DTD ({ratio}) between groups (p={p_val:.3f})")
+            st.write("No significant differences found between groups.")
     
-    # Compare confidence between groups
-    for conf_col in ["decision_confidence_15_85", "decision_confidence_60_40"]:
-        ratio = "15/85" if conf_col == "decision_confidence_15_85" else "60/40"
+    # Regression Analysis
+    st.subheader("Regression Analysis")
+    
+    # Select dependent variable
+    dependent_var = st.selectbox(
+        "Select Dependent Variable",
+        options=["dtd_15_85", "dtd_60_40", 
+                "decision_confidence_15_85", "decision_confidence_60_40",
+                "first_conf_85_15", "first_conf_60_40",
+                "last_conf_85_15", "last_conf_60_40"],
+        index=0
+    )
+    
+    # Select independent variables
+    independent_vars = st.multiselect(
+        "Select Independent Variables",
+        options=["olife_total", "ss1", "ss2", "ss3", "ss4"],
+        default=["olife_total"]
+    )
+    
+    if independent_vars:
+        # Prepare data for regression
+        X = merged_data[independent_vars].copy()
+        y = merged_data[dependent_var].copy()
         
-        high_group = merged_data[merged_data["schizotypy_group"] == "High"][conf_col]
-        low_group = merged_data[merged_data["schizotypy_group"] == "Low"][conf_col]
+        # Add constant for intercept
+        X = sm.add_constant(X)
         
-        t_stat, p_val = stats.ttest_ind(high_group, low_group)
+        # Fit regression model
+        model = sm.OLS(y, X).fit()
         
-        fig = px.box(merged_data, x="schizotypy_group", y=conf_col, 
-                   labels={"schizotypy_group": "Schizotypy Group", conf_col: f"Confidence ({ratio})"},
-                   title=f"Decision Confidence ({ratio}) Comparison by Schizotypy Group (p={p_val:.3f})")
+        # Display regression results
+        st.write("Regression Results:")
         
-        fig.update_layout(height=500)
-        st.plotly_chart(fig)
+        # Create table of results
+        results_df = pd.DataFrame({
+            "Variable": ["constant"] + independent_vars,
+            "Coefficient": model.params.values,
+            "Std Error": model.bse.values,
+            "t-value": model.tvalues.values,
+            "p-value": model.pvalues.values
+        })
         
-        if p_val < 0.05:
-            st.success(f"Significant difference in Decision Confidence ({ratio}) between high and low schizotypy groups (p={p_val:.3f})")
-        else:
-            st.info(f"No significant difference in Decision Confidence ({ratio}) between groups (p={p_val:.3f})")
+        st.dataframe(results_df)
+        
+        # Display model summary metrics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("R-squared", f"{model.rsquared:.3f}")
+        
+        with col2:
+            st.metric("Adjusted R-squared", f"{model.rsquared_adj:.3f}")
+        
+        with col3:
+            st.metric("F-statistic p-value", f"{model.f_pvalue:.3f}")
+        
+        # Create prediction plot
+        if len(independent_vars) == 1:
+            # For single predictor, create scatter plot with regression line
+            fig = px.scatter(
+                merged_data,
+                x=independent_vars[0],
+                y=dependent_var,
+                trendline="ols",
+                labels={
+                    independent_vars[0]: independent_vars[0],
+                    dependent_var: dependent_var
+                },
+                title=f"Regression: {dependent_var} vs {independent_vars[0]}"
+            )
+            st.plotly_chart(fig)
 
 with tab5:
     st.header("Clustering Analysis")
     
-    # Select features for clustering
-    st.subheader("K-Means Clustering")
-    
-    feature_options = {
-        'DTD (15/85)': ['dtd_15_85'],
-        'DTD (60/40)': ['dtd_60_40'],
-        'Confidence (15/85)': ['decision_confidence_15_85'],
-        'Confidence (60/40)': ['decision_confidence_60_40'],
-        'Schizotypy Total': ['olife_total'],
-        'SS1: Unusual Experiences': ['ss1'],
-        'SS2: Cognitive Disorganisation': ['ss2'],
-        'SS3: Introvertive Anhedonia': ['ss3'],
-        'SS4: Impulsive Nonconformity': ['ss4']
-    }
-    
-    # Let user select feature categories
-    selected_categories = st.multiselect(
-        "Select feature categories for clustering:",
-        options=list(feature_options.keys()),
-        default=['DTD (15/85)', 'DTD (60/40)', 'Schizotypy Total']
+    # Select clustering features
+    clustering_features = st.multiselect(
+        "Select Features for Clustering",
+        options=["dtd_15_85", "dtd_60_40", 
+                "decision_confidence_15_85", "decision_confidence_60_40",
+                "first_conf_85_15", "first_conf_60_40",
+                "last_conf_85_15", "last_conf_60_40",
+                "olife_total", "ss1", "ss2", "ss3", "ss4"],
+        default=["dtd_15_85", "dtd_60_40", "decision_confidence_15_85", "first_conf_85_15", "last_conf_85_15"]
     )
     
-    # Get all selected features
-    selected_features = []
-    for category in selected_categories:
-        selected_features.extend(feature_options[category])
-    
-    if not selected_features:
-        st.warning("Please select at least one feature category for clustering.")
-    else:
-        # Create two columns for elbow chart and slider
-        col1, col2 = st.columns([1, 1])
+    if len(clustering_features) > 1:
+        # Add elbow method for optimal k selection
+        st.subheader("Elbow Method for Optimal Number of Clusters")
         
         # Prepare data for clustering
-        X = merged_data[selected_features].copy()
+        clustering_data = merged_data[clustering_features].copy()
+        clustering_data = clustering_data.dropna()
         
-        # Standardize the features
+        # Normalize data
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        scaled_data = scaler.fit_transform(clustering_data)
         
-        with col1:
-            # Add elbow chart
-            st.subheader("Elbow Chart for Optimal Clusters")
-            
-            # Calculate inertia for different numbers of clusters (1-10)
-            inertia = []
-            k_range = range(1, 11)
-            
-            # Create a progress bar
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i, k in enumerate(k_range):
-                status_text.text(f"Calculating for {k} clusters...")
-                kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-                kmeans.fit(X_scaled)
-                inertia.append(kmeans.inertia_)
-                progress_bar.progress((i + 1) / len(k_range))
-            
-            status_text.text("Elbow chart calculation complete!")
-            
-            # Calculate the rate of change and find the elbow point
-            inertia_diff = np.diff(inertia)
-            inertia_diff2 = np.diff(inertia_diff)
-            suggested_clusters = np.argmax(inertia_diff2) + 2  # +2 because we started with k=1 and took differences twice
-            
-            # Create the elbow chart
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=list(k_range),
-                y=inertia,
-                mode='lines+markers',
-                name='Inertia',
-                marker=dict(size=10)
-            ))
-            
-            # Add a vertical line at the suggested optimal number of clusters
-            fig.add_vline(x=suggested_clusters, line_dash="dash", line_color="red")
-            
-            fig.update_layout(
-                title=f"Elbow Method (Suggested optimal clusters: {suggested_clusters})",
-                xaxis_title="Number of Clusters (k)",
-                yaxis_title="Inertia (Within-Cluster Sum of Squares)",
-                height=400
-            )
-            
-            st.plotly_chart(fig)
-            
-            st.info(f"**Suggested optimal number of clusters: {suggested_clusters}**  \n"
-                   f"This is based on finding the 'elbow' point in the inertia curve - the point where adding more clusters "
-                   f"doesn't significantly reduce the within-cluster sum of squares. "
-                   f"However, the final decision should also consider your research question and interpretability of results.")
+        # Calculate WCSS (Within-Cluster Sum of Square) for different values of k
+        show_elbow = st.checkbox("Show Elbow Analysis", value=True)
         
-        with col2:
-            # Select number of clusters
-            n_clusters = st.slider("Number of clusters:", min_value=2, max_value=10, value=suggested_clusters)
-            
-            # Apply K-means clustering with the selected number of clusters
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            clusters = kmeans.fit_predict(X_scaled)
-            
-            # Add cluster labels to data
-            merged_data_with_clusters = merged_data.copy()
-            merged_data_with_clusters['Cluster'] = clusters
-            
-            # Store the clustered data in session state for other tabs to use
-            st.session_state['merged_data_with_clusters'] = merged_data_with_clusters
-            st.session_state['selected_features'] = selected_features
-            st.session_state['n_clusters'] = n_clusters
-            st.session_state['kmeans'] = kmeans
-            st.session_state['X_scaled'] = X_scaled
-            
-            # Silhouette score to evaluate clustering quality
-            from sklearn.metrics import silhouette_score
-            
-            silhouette_avg = silhouette_score(X_scaled, clusters)
-            st.metric("Silhouette Score", f"{silhouette_avg:.3f}")
-            
-            if silhouette_avg < 0.2:
-                st.warning("Low silhouette score indicates poor cluster separation.")
-            elif silhouette_avg >= 0.5:
-                st.success("High silhouette score indicates well-separated clusters.")
-            else:
-                st.info("Moderate silhouette score indicates reasonable cluster separation.")
+        if show_elbow:
+            with st.spinner("Calculating optimal number of clusters..."):
+                wcss = []
+                silhouette_scores = []
+                k_range = range(2, 11)  # Test from 2 to 10 clusters
+                
+                for k in k_range:
+                    kmeans = KMeans(n_clusters=k, random_state=42)
+                    kmeans.fit(scaled_data)
+                    wcss.append(kmeans.inertia_)
+                    
+                    # Calculate silhouette score
+                    cluster_labels = kmeans.labels_
+                    silhouette_avg = sklearn.metrics.silhouette_score(scaled_data, cluster_labels)
+                    silhouette_scores.append(silhouette_avg)
+                
+                # Create elbow plot
+                fig = make_subplots(rows=1, cols=2, 
+                                   subplot_titles=("Elbow Method (WCSS)", "Silhouette Score"),
+                                   specs=[[{"type": "scatter"}, {"type": "scatter"}]])
+                
+                # Add WCSS trace
+                fig.add_trace(
+                    go.Scatter(x=list(k_range), y=wcss, mode='lines+markers', name='WCSS'),
+                    row=1, col=1
+                )
+                
+                # Add Silhouette score trace
+                fig.add_trace(
+                    go.Scatter(x=list(k_range), y=silhouette_scores, mode='lines+markers', 
+                              name='Silhouette Score'),
+                    row=1, col=2
+                )
+                
+                # Update layout
+                fig.update_layout(
+                    height=500, 
+                    title_text="Cluster Quality Metrics",
+                    showlegend=False
+                )
+                
+                fig.update_xaxes(title_text="Number of Clusters (k)", row=1, col=1)
+                fig.update_xaxes(title_text="Number of Clusters (k)", row=1, col=2)
+                fig.update_yaxes(title_text="WCSS", row=1, col=1)
+                fig.update_yaxes(title_text="Silhouette Score (higher is better)", row=1, col=2)
+                
+                st.plotly_chart(fig)
+                
+                # Find optimal k based on silhouette score
+                optimal_k_silhouette = k_range[silhouette_scores.index(max(silhouette_scores))]
+                st.success(f"Optimal number of clusters based on silhouette score: {optimal_k_silhouette}")
         
-        # Display cluster characteristics
-        st.subheader("Cluster Characteristics")
+        # Select number of clusters
+        n_clusters = st.slider("Number of Clusters", min_value=2, max_value=10, value=3)
         
-        # Show cluster means
-        cluster_means = merged_data_with_clusters.groupby('Cluster')[selected_features].mean()
-        st.dataframe(cluster_means.style.background_gradient(cmap='viridis'))
+        # Perform K-means clustering
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        clusters = kmeans.fit_predict(scaled_data)
         
-        # Display cluster sizes
-        cluster_counts = merged_data_with_clusters['Cluster'].value_counts().sort_index()
+        # Calculate silhouette score for the selected number of clusters
+        silhouette_avg = sklearn.metrics.silhouette_score(scaled_data, clusters)
+        st.metric("Silhouette Score", f"{silhouette_avg:.3f}", 
+                 delta=f"{silhouette_avg - 0.5:.3f}" if silhouette_avg > 0.5 else f"{silhouette_avg - 0.5:.3f}",
+                 delta_color="normal")
         
-        fig = px.bar(
-            x=cluster_counts.index,
-            y=cluster_counts.values,
-            labels={'x': 'Cluster', 'y': 'Count'},
-            title="Number of Participants in Each Cluster"
+        if silhouette_avg < 0.3:
+            st.warning("Low silhouette score indicates poor clustering quality. Consider using different features or changing the number of clusters.")
+        elif silhouette_avg > 0.6:
+            st.success("High silhouette score indicates good clustering quality.")
+            
+        # Add cluster labels to the data
+        clustered_data = clustering_data.copy()
+        clustered_data["Cluster"] = clusters
+        
+        # Store clustering results in session state for other tabs to use
+        merged_data_with_clusters = merged_data.loc[clustered_data.index].copy()
+        merged_data_with_clusters["Cluster"] = clusters
+        
+        # Define high/low schizotypy groups based on median
+        median_schizo = merged_data['olife_total'].median()
+        merged_data_with_clusters['Schizotypy_Group'] = merged_data['olife_total'].apply(
+            lambda x: 'High' if x > median_schizo else 'Low'
+        )
+        
+        # Save to session state
+        st.session_state['merged_data_with_clusters'] = merged_data_with_clusters
+        st.session_state['selected_features'] = clustering_features
+        st.session_state['n_clusters'] = n_clusters
+        
+        # Visualize clusters using PCA for dimensionality reduction
+        pca = PCA(n_components=2)
+        pca_result = pca.fit_transform(scaled_data)
+        
+        # Create dataframe for plotting
+        pca_df = pd.DataFrame({
+            "PC1": pca_result[:, 0],
+            "PC2": pca_result[:, 1],
+            "Cluster": clusters
+        })
+        
+        # Map participant IDs and schizotypy group for hover data
+        pca_df["participant_id"] = clustered_data.index
+        pca_df["schizotypy"] = merged_data_with_clusters['olife_total']
+        pca_df["schizotypy_group"] = merged_data_with_clusters['Schizotypy_Group']
+        
+        # Create scatter plot of clusters
+        fig = px.scatter(
+            pca_df,
+            x="PC1",
+            y="PC2",
+            color="Cluster",
+            hover_data=["participant_id", "schizotypy", "schizotypy_group"],
+            title="PCA Visualization of Clusters",
+            labels={"PC1": f"PC1 ({pca.explained_variance_ratio_[0]:.2%} variance)",
+                   "PC2": f"PC2 ({pca.explained_variance_ratio_[1]:.2%} variance)"}
         )
         st.plotly_chart(fig)
         
-        # Visualize clusters
-        st.subheader("Cluster Visualization")
+        # Show cluster characteristics
+        st.subheader("Cluster Characteristics")
         
-        # If we have 4+ features, use PCA for visualization
-        if len(selected_features) > 3:
-            # Apply PCA to reduce dimensionality
-            pca = PCA(n_components=2)
-            X_pca = pca.fit_transform(X_scaled)
-            
-            # Create a DataFrame for plotting
-            pca_df = pd.DataFrame(X_pca, columns=['PC1', 'PC2'])
-            pca_df['Cluster'] = clusters
-            pca_df['participant_id'] = merged_data['participant_id']
-            
-            # Add key metrics for hover data
-            for feature in ['olife_total', 'dtd_15_85', 'dtd_60_40']:
-                if feature in merged_data.columns:
-                    pca_df[feature] = merged_data[feature].values
-            
-            # Create PCA scatter plot
-            fig = px.scatter(
-                pca_df,
-                x='PC1',
-                y='PC2',
-                color='Cluster',
-                hover_data=['participant_id'] + [col for col in ['olife_total', 'dtd_15_85', 'dtd_60_40'] if col in pca_df.columns],
-                title=f"PCA Visualization of Clusters (Explained Variance: {pca.explained_variance_ratio_.sum():.2%})"
-            )
-            st.plotly_chart(fig)
-            
-            # Explained variance
-            st.write(f"PC1 explained variance: {pca.explained_variance_ratio_[0]:.2%}")
-            st.write(f"PC2 explained variance: {pca.explained_variance_ratio_[1]::.2%}")
-            
-            # Feature importance
-            feature_importance = pd.DataFrame(
-                pca.components_.T,
-                columns=[f'PC{i+1}' for i in range(2)],
-                index=selected_features
-            )
-            st.subheader("PCA Feature Importance")
-            st.dataframe(feature_importance.style.background_gradient(cmap='coolwarm'))
+        # Calculate cluster means
+        cluster_means = clustered_data.groupby("Cluster")[clustering_features].mean()
         
-        # If we have exactly 2 features, create a direct scatter plot
-        elif len(selected_features) == 2:
-            fig = px.scatter(
-                merged_data_with_clusters,
-                x=selected_features[0],
-                y=selected_features[1],
-                color='Cluster',
-                hover_data=['participant_id', 'olife_total'],
-                title=f"Clusters based on {selected_features[0]} and {selected_features[1]}"
-            )
-            st.plotly_chart(fig)
+        # Reshape for plotting
+        cluster_means_melted = cluster_means.reset_index().melt(
+            id_vars="Cluster",
+            value_vars=clustering_features,
+            var_name="Feature",
+            value_name="Mean Value"
+        )
         
-        # For 3 features, create a 3D scatter plot
-        elif len(selected_features) == 3:
-            fig = px.scatter_3d(
-                merged_data_with_clusters,
-                x=selected_features[0],
-                y=selected_features[1],
-                z=selected_features[2],
-                color='Cluster',
-                hover_data=['participant_id', 'olife_total'],
-                title=f"3D Clusters based on selected features"
-            )
-            st.plotly_chart(fig)
+        # Create bar chart of cluster means
+        fig = px.bar(
+            cluster_means_melted,
+            x="Feature",
+            y="Mean Value",
+            color="Cluster",
+            barmode="group",
+            title="Mean Feature Values by Cluster"
+        )
+        st.plotly_chart(fig)
         
-        # Cross-tabulation with schizotypy groups
-        if 'olife_total' in merged_data.columns:
-            st.subheader("Clusters and Schizotypy Groups")
+        # Show cluster details
+        st.subheader("Cluster Details")
+        
+        # Add participant information to clusters
+        cluster_details = merged_data.loc[clustered_data.index].copy()
+        cluster_details["Cluster"] = clusters
+        
+        # Show counts per cluster
+        st.write("Participants per cluster:")
+        st.write(cluster_details["Cluster"].value_counts())
+        
+        # Select cluster to examine
+        selected_cluster = st.selectbox(
+            "Select Cluster to Examine",
+            options=sorted(cluster_details["Cluster"].unique())
+        )
+        
+        # Filter data for selected cluster
+        selected_cluster_data = cluster_details[cluster_details["Cluster"] == selected_cluster]
+        
+        # Display participant IDs in the selected cluster
+        st.write(f"Participants in Cluster {selected_cluster}:")
+        st.write(", ".join(selected_cluster_data["participant_id"].tolist()))
+        
+        # Compare selected cluster with others
+        st.subheader(f"Cluster {selected_cluster} vs. Other Clusters")
+        
+        # Prepare data for comparison
+        comparison_data = cluster_details.copy()
+        comparison_data["Group"] = comparison_data["Cluster"].apply(
+            lambda x: f"Cluster {selected_cluster}" if x == selected_cluster else "Other Clusters"
+        )
+        
+        # Select features for comparison
+        comparison_features = clustering_features + ["olife_total", "ss1", "ss2", "ss3", "ss4"]
+        
+        # Calculate means for comparison
+        comparison_means = comparison_data.groupby("Group")[comparison_features].mean().reset_index()
+        
+        # Reshape for plotting
+        comparison_means_melted = comparison_means.melt(
+            id_vars="Group",
+            value_vars=comparison_features,
+            var_name="Feature",
+            value_name="Mean Value"
+        )
+        
+        # Create comparison bar chart
+        fig = px.bar(
+            comparison_means_melted,
+            x="Feature",
+            y="Mean Value",
+            color="Group",
+            barmode="group",
+            title=f"Cluster {selected_cluster} vs. Other Clusters"
+        )
+        st.plotly_chart(fig)
+        
+        # Statistical tests for differences
+        st.subheader("Statistical Tests")
+        
+        test_results = []
+        
+        for feature in comparison_features:
+            # Get data for each group
+            group1 = comparison_data[comparison_data["Group"] == f"Cluster {selected_cluster}"][feature].dropna()
+            group2 = comparison_data[comparison_data["Group"] == "Other Clusters"][feature].dropna()
             
-            # Define high/low schizotypy groups based on median
-            median_schizo = merged_data['olife_total'].median()
-            merged_data_with_clusters['Schizotypy_Group'] = merged_data['olife_total'].apply(
-                lambda x: 'High' if x > median_schizo else 'Low'
-            )
+            # Skip if too few samples
+            if len(group1) < 2 or len(group2) < 2:
+                continue
+                
+            # Perform t-test
+            t_stat, p_val = scipy.stats.ttest_ind(group1, group2, equal_var=False)
             
-            # Create cross-tabulation
-            cross_tab = pd.crosstab(
-                merged_data_with_clusters['Cluster'], 
-                merged_data_with_clusters['Schizotypy_Group']
-            )
+            test_results.append({
+                "Feature": feature,
+                f"Cluster {selected_cluster} Mean": group1.mean(),
+                "Other Clusters Mean": group2.mean(),
+                "Mean Difference": group1.mean() - group2.mean(),
+                "t-statistic": t_stat,
+                "p-value": p_val
+            })
+        
+        # Display test results
+        if test_results:
+            test_df = pd.DataFrame(test_results)
+            test_df = test_df.sort_values(by="p-value")
+            st.dataframe(test_df)
             
-            st.write("Cross-tabulation of Clusters and Schizotypy Groups:")
-            st.dataframe(cross_tab)
+            # Highlight significant differences
+            significant_features = test_df[test_df["p-value"] < 0.05]["Feature"].tolist()
             
-            # Visualize cross-tabulation
-            fig = px.bar(
-                cross_tab.reset_index().melt(id_vars='Cluster', var_name='Schizotypy_Group', value_name='Count'),
-                x='Cluster',
-                y='Count',
-                color='Schizotypy_Group',
-                barmode='group',
-                title="Distribution of Schizotypy Groups within Each Cluster"
-            )
-            st.plotly_chart(fig)
-            
-            # Chi-square test for independence
-            chi2, p, dof, expected = stats.chi2_contingency(cross_tab)
-            st.write(f"Chi-square test for independence: χ² = {chi2:.2f}, p = {p:.4f}")
-            if p < 0.05:
-                st.success("There is a significant association between clusters and schizotypy groups.")
+            if significant_features:
+                st.success(f"Significant differences found in: {', '.join(significant_features)}")
             else:
-                st.info("There is no significant association between clusters and schizotypy groups.")
+                st.info("No significant differences found.")
+        else:
+            st.write("Insufficient data for statistical tests.")
 
 with tab6:
     st.header("Cluster Insights")
@@ -946,11 +1581,17 @@ with tab7:
         avg_dtd_60_40 = merged_data["dtd_60_40"].mean()
         
         if dtd_15_85 < avg_dtd_15_85 and dtd_60_40 < avg_dtd_60_40:
-            st.write("This participant tends to make decisions more quickly (with fewer draws) than average, "
-                   "which might indicate a tendency toward jumping to conclusions.")
+            st.write("This participant tends to make decisions with significantly fewer draws than average, "
+                   "demonstrating a strong 'jumping to conclusions' (JTC) bias. This cognitive pattern is a "
+                   "well-established risk marker for schizophrenia-spectrum disorders, as individuals with "
+                   "schizophrenia or high schizotypy typically gather less evidence before making decisions.")
+            st.write("**Clinical relevance:** The JTC bias observed here is consistently associated with delusion formation "
+                   "and maintenance in schizophrenia and related disorders. This participant's evidence-gathering behavior "
+                   "aligns with patterns observed in individuals with higher risk for psychosis.")
         elif dtd_15_85 > avg_dtd_15_85 and dtd_60_40 > avg_dtd_60_40:
             st.write("This participant tends to gather more evidence before making decisions compared to the average, "
-                   "indicating a more cautious decision-making approach.")
+                   "indicating a more cautious decision-making approach. This pattern is typically associated with "
+                   "lower schizotypy and reduced risk for schizophrenia-spectrum cognitive biases.")
         else:
             st.write("This participant shows mixed decision-making patterns across different difficulty levels.")
         
